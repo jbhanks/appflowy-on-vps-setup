@@ -1,0 +1,81 @@
+# Baseline (flat, human-readable)
+REALNAME: XXXXX
+EMAIL: XXXXX
+COUNTRY: XXXXX
+DOMAIN: XXXXX
+LOCALIP: XXXXX
+VPNIP: XXXXX
+
+SERVER_IP: XXXXX
+SSHKEY: XXXXX
+
+ansible_python_interpreter: XXXXX
+ansible_user: XXXXX
+ansible_host: XXXXX
+ansible_ssh_private_key_file: XXXXX
+log_path: XXXXX
+
+
+ADMINPORT: XXXXX
+HTZ_VOL_SIZE: XXXXX
+TEST_SITE_REPO: XXXXX
+
+CONSOLE_ROOT_PASSWORD: XXXXX
+
+
+B2ID: XXXXX
+B2KEY: XXXXX
+B2ENDPOINT: XXXXX
+BACKUPBUCKET: XXXXX
+RESOURCE_BUCKET: XXXXX
+
+APP_ROOT: XXXXX
+ENV_DIR: XXXXX
+
+
+PGVERSION: XXXXX
+DBPORT: XXXXX
+DBUSERNAME: XXXXX
+DBNAME: XXXXX
+DBUSERPASS: XXXXX
+DBSUPERPASS: XXXXX
+PGPASSWORD: XXXXX
+
+GITEAHOST: XXXXX
+GITSSHPORT: XXXXX
+GITSSHPHRASE: XXXXX
+
+ADMINUSER: XXXXX
+APPUSER: XXXXX
+APPUSER2: XXXXX
+APPUSER3: XXXXX
+APPUSER4: XXXXX
+APPUSER5: XXXXX
+
+SUBDOMAINS:
+  - XXXXX
+  - XXXXX
+  - XXXXX
+
+# Services (structured list)
+SERVICES:
+  - name: XXXXX
+    image: XXXXX
+    publish: XXXXX
+    vhost: { host: "gits.example.com", upstream: XXXXX
+
+  - name: XXXXX
+    image: XXXXX
+    publish: XXXXX
+    vhost: { host: "grocy.example.com", upstream: XXXXX
+
+# Postgres (structured, because it repeats per service)
+POSTGRES:
+  enabled: XXXXX
+  databases:
+    - name: XXXXX
+      user: XXXXX
+    - name: XXXXX
+      user: XXXXX
+    - name: XXXXX
+      user: XXXXX

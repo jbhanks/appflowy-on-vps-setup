@@ -1,0 +1,2 @@
+- When you manually insert users, use a bcrypt hash that starts with $2a$ or $2b$, not $2y$.
+- add to pg_hba.conf: `host    appflowy     postgres     10.89.0.0/16     scram-sha-256`

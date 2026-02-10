@@ -1,0 +1,53 @@
+---
+- name: VPS converge
+  hosts: services
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Common baseline
+      ansible.builtin.import_tasks: playbooks/01-common.yml
+
+    - name: DB setup
+      ansible.builtin.import_tasks: playbooks/02-postgres.yml
+
+    - name: Nginx setup
+      ansible.builtin.import_tasks: playbooks/03-nginx.yml
+
+    - name: Podman baseline
+      ansible.builtin.import_tasks: playbooks/04-podman.yml
+
+    - name: Configure Nginx
+      ansible.builtin.import_tasks: playbooks/05-configure_nginx.yml
+
+    - name: Sleep after nginx
+      pause:
+        seconds: 60
+
+    - name: Add robots.txt
+      # import_tasks: admin_common/add_robots.yml
+      shell: |
+        cat<<EOF|sudo tee /etc/nginx/robots.conf
+        add_header  Content-Type  text/plain;
+        return 200 "User-agent: *\nDisallow: /\n";
+        EOF
+
+    - name: Lets Encrypt setup
+      ansible.builtin.import_tasks: playbooks/06-configure_letsencrypt.yml
+
+    - name: AppFlowy (podman quadlet + nginx vhost)
+      ansible.builtin.import_tasks: playbooks/07-appflowy.yml
+
+    # - name: Services
+    #   ansible.builtin.import_tasks: playbooks/services.yml
+
+    # - name: Nginx
+    #   ansible.builtin.import_tasks: playbooks/nginx.yml
+    #   when: nginx.enabled | default(false)
+
+
+  handlers:
+    - ansible.builtin.import_tasks: handlers.yml

@@ -1,0 +1,256 @@
+---
+- name: Add robots.txt
+  copy:
+    dest: "/etc/nginx/robots.conf"
+    content: |
+      add_header  Content-Type  text/plain;
+      return 200 "User-agent: *\nDisallow: /\n";
+
+- name: Install certbot and certbot nginx plugin
+  dnf:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Ensure nginx default.d directory exists
+  ansible.builtin.file:
+    path: /etc/nginx/default.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure nginx bootstrap cert directory exists
+  ansible.builtin.file:
+    path: /etc/pki/nginx
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create self-signed bootstrap cert for nginx if missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ ! -f /etc/pki/nginx/bootstrap.crt ] || [ ! -f /etc/pki/nginx/bootstrap.key ]; then
+      openssl req -x509 -nodes -newkey rsa:2048 -days 2 \
+        -keyout /etc/pki/nginx/bootstrap.key \
+        -out /etc/pki/nginx/bootstrap.crt \
+        -subj "/CN={{ DOMAIN }}"
+      chmod 0600 /etc/pki/nginx/bootstrap.key
+      chmod 0644 /etc/pki/nginx/bootstrap.crt
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Deploy SSL parameters config pre-certbot
+  ansible.builtin.copy:
+    dest: /etc/nginx/default.d/ssl-params.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      ssl_protocols TLSv1.3;
+      ssl_conf_command Ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256;
+      ssl_ecdh_curve X25519:secp384r1;
+      ssl_session_timeout  90m;
+      ssl_session_cache shared:SSL:10m;
+      ssl_session_tickets off;
+
+      ssl_certificate     /etc/pki/nginx/bootstrap.crt;
+      ssl_certificate_key /etc/pki/nginx/bootstrap.key;
+
+- name: Write default 443 server pre-certbot
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/00-default-443.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      server {
+          listen 443 ssl default_server;
+          listen [::]:443 ssl default_server;
+          server_name _;
+          include /etc/nginx/default.d/ssl-params.conf;
+          return 444;
+      }
+
+- name: Reload nginx pre-certbot
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+
+- name: Generate certbot command flags
+  set_fact:
+    CERTBOT_DOMAINS: >-
+      {{ SUBDOMAINS | map('regex_replace', '^(.*)$', '-d \1.' + DOMAIN) | join(' ') }}
+
+- name: Run certbot to get/renew certs
+  shell: >
+    certbot certonly -vvv --non-interactive --expand --agree-tos
+    --email {{ EMAIL }} --rsa-key-size 4096
+    --nginx --nginx-server-root=/etc/nginx
+    -d {{ DOMAIN }} {{ CERTBOT_DOMAINS }}
+  register: certbot_result
+  changed_when: "'Certificate not yet due for renewal' not in certbot_result.stdout"
+
+- name: Ensure nginx snippets directory exists
+  file:
+    path: /etc/nginx/snippets
+    state: directory
+
+- name: Extract resolvers from resolv.conf
+  ansible.builtin.command: >
+    awk '
+      /^nameserver/ {
+        ns=$2
+        if (ns ~ /:/) printf "[%s] ", ns; else printf "%s ", ns
+      }' /etc/resolv.conf
+  register: resolvers_cmd
+  changed_when: false
+
+- name: Set RESOLVERS fact
+  ansible.builtin.set_fact:
+    RESOLVERS: "{{ resolvers_cmd.stdout | trim }}"
+
+- name: Create resolver.conf snippet
+  copy:
+    dest: /etc/nginx/snippets/resolver.conf
+    content: |
+      resolver {{ RESOLVERS }} valid=300s;
+      resolver_timeout 5s;
+
+- name: Deploy SSL parameters config post-certbot
+  ansible.builtin.copy:
+    dest: /etc/nginx/default.d/ssl-params.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      ssl_protocols TLSv1.3 TLSv1.2;
+      ssl_conf_command Ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256;
+      ssl_ecdh_curve X25519:secp384r1;
+      ssl_session_timeout  90m;
+      ssl_session_cache shared:SSL:10m;
+      ssl_session_tickets off;
+
+      include /etc/nginx/snippets/resolver.conf;
+
+      add_header X-Frame-Options DENY;
+      add_header X-Content-Type-Options nosniff;
+      add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+
+      ssl_certificate     /etc/letsencrypt/live/{{ DOMAIN }}/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/{{ DOMAIN }}/privkey.pem;
+
+- name: Reload nginx post-certbot
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+
+
+- name: Reload Nginx
+  service:
+    name: nginx
+    state: reloaded
+
+- name: Generate hostnames (apex + www + subdomains)
+  ansible.builtin.set_fact:
+    hostnames: >-
+      {{
+        [DOMAIN, 'www.' ~ DOMAIN]
+        +
+        (
+          SUBDOMAINS
+          | map('regex_replace', '\.?'+DOMAIN+'$', '')
+          | map('regex_replace', '\.$', '')
+          | reject('equalto', '')
+          | map('regex_replace', '^(.*)$', '\1.' ~ DOMAIN)
+          | list
+        )
+      }}
+
+- name: Write default server
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/00-default-443.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      server {
+          listen 443 ssl default_server;
+          listen [::]:443 ssl default_server;
+          server_name _;
+          include /etc/nginx/default.d/ssl-params.conf;
+          return 444;
+      }
+
+- name: Generate nginx HTTPS server configs for hostnames
+  ansible.builtin.copy:
+    dest: "/etc/nginx/conf.d/{{ item }}.conf"
+    content: |
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name {{ item }};
+          return 301 https://$host$request_uri;
+      }
+
+      server {
+          listen 443 ssl;
+          listen [::]:443 ssl;
+          server_name {{ item }};
+          include /etc/nginx/default.d/*.conf;
+          root /var/www/html/{{ item }};
+          access_log  /var/log/nginx/{{ item }}_access.log  main;
+          error_log  /var/log/nginx/{{ item }}_error.log warn;
+          index index.html;
+
+          allow {{ VPNIP }};
+          allow {{ LOCALIP }};
+          deny all;
+
+          location = /robots.txt {
+              include /etc/nginx/robots.conf;
+          }
+      }
+  loop: "{{ hostnames }}"
+
+- name: Write default 443 server post-certbot
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/00-default-443.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      server {
+          listen 443 ssl default_server;
+          listen [::]:443 ssl default_server;
+          server_name _;
+          include /etc/nginx/default.d/ssl-params.conf;
+          return 444;
+      }
+
+- name: Ensure docroot exists
+  ansible.builtin.file:
+    path: "/var/www/html/{{ item }}"
+    state: directory
+    owner: nginx
+    group: nginx
+    mode: '0755'
+  loop: "{{ hostnames }}"
+
+- name: Generate static placeholder index.html per hostname
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "/var/www/html/{{ item }}/index.html"
+    owner: nginx
+    group: nginx
+    mode: '0644'
+  loop: "{{ hostnames }}"
+
+- name: Reload Nginx
+  service:
+    name: nginx
+    state: reloaded

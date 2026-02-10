@@ -1,0 +1,65 @@
+---
+- name: Install nginx
+  ansible.builtin.package:
+    name: nginx
+    state: present
+
+- name: Ensure nginx conf.d exists
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d
+    state: directory
+    mode: "0755"
+
+- name: Render vhosts
+  ansible.builtin.template:
+    src: templates/nginx_vhost.conf.j2
+    dest: "/etc/nginx/conf.d/{{ item.name }}.conf"
+    mode: "0644"
+  loop: "{{ services }}"
+  when: item.vhost is defined
+  notify: reload nginx
+
+- name: Enable and start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+# handlers:
+#   - name: reload nginx
+#     ansible.builtin.systemd:
+#       name: nginx
+#       state: reloaded
+
+
+
+##################################
+####### Install Nginx #############
+##################################
+
+# - name: Install Nginx
+#   dnf:
+#     name: nginx
+#     state: present
+
+# - name: Enable and start Nginx
+#   service:
+#     name: nginx
+#     enabled: true
+#     state: started
+
+- name: Allow HTTP and HTTPS ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+  loop:
+    - 80
+    - 443
+
+- name: Enable UFW logging
+  ufw:
+    logging: on
+
+- name: Reload UFW
+  ufw:
+    state: reloaded

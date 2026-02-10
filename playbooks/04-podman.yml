@@ -1,0 +1,11 @@
+---
+- name: Install podman
+  ansible.builtin.package:
+    name: podman
+    state: present
+
+- name: Ensure quadlet directory exists
+  ansible.builtin.file:
+    path: /etc/containers/systemd
+    state: directory
+    mode: "0755"

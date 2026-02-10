@@ -1,0 +1,1122 @@
+---
+- name: Ensure base directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ APP_ROOT }}"
+    - "{{ ENV_DIR }}"
+
+
+#########################
+######### Initial setup ##########
+###########################
+- name: Clean DNF metadata cache  # Edit by ChatGPT
+  ansible.builtin.command: dnf clean all  # Edit by ChatGPT
+  changed_when: false  # Edit by ChatGPT
+
+- name: Refresh package metadata  # Edit by ChatGPT
+  ansible.builtin.dnf:  # Edit by ChatGPT
+    update_cache: true  # Edit by ChatGPT
+
+- name: Distro-sync to align packages with repos  # Edit by ChatGPT
+  ansible.builtin.command: dnf -y --refresh distro-sync  # Edit by ChatGPT
+  register: distro_sync_result  # Edit by ChatGPT
+  changed_when: distro_sync_result.rc == 0  # Edit by ChatGPT
+
+- name: Update all packages  # Edit by ChatGPT
+  ansible.builtin.dnf:  # Edit by ChatGPT
+    name: "*"  # Edit by ChatGPT
+    state: latest  # Edit by ChatGPT
+    allowerasing: true  # Edit by ChatGPT
+
+- name: Install EPEL release first
+  dnf:
+    name: epel-release
+    state: present
+
+- name: Refresh repo metadata
+  command: dnf makecache
+  changed_when: false
+
+- name: Install core packages
+  dnf:
+    name:
+      - dnf-automatic
+      - glibc-locale-source
+      - langpacks-en
+      - ufw
+      - unzip
+      - net-tools
+      - ca-certificates
+      - curl
+      - git
+      - vim
+      - tmux
+      - traceroute
+      - setroubleshoot
+      - util-linux-user
+      - bind-utils
+      - wget
+      - zsh
+      - openssh-clients
+      - tcpdump
+      - skopeo
+    state: present
+
+- name: Enable and start dnf-automatic timer
+  systemd:
+    name: dnf-automatic.timer
+    enabled: true
+    state: started
+
+- name: Set system locale to en_US.UTF-8
+  command: localectl set-locale LANG=en_US.UTF-8
+
+- name: Gather installed packages
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Mask firewalld to prevent activation by future updates
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+    masked: true
+  ignore_errors: true
+
+# - name: Configure UFW rules and enable
+#   shell: |
+#     ufw default deny incoming
+#     ufw default allow outgoing
+#     ufw allow ssh
+#     ufw allow 22
+#     yes | ufw enable
+
+# - name: Enable UFW
+#   systemd:
+#     name: ufw
+#     enabled: true
+#     state: started
+
+
+- name: Set zsh as default shell for current user
+  user:
+    name: "root"
+    shell: "/usr/bin/zsh"
+
+- name: Create .zshrc.d directory
+  file:
+    path: /root/.zshrc.d
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: '0755'
+
+- name: Install Oh My Zsh
+  shell: |
+    RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+  args:
+    chdir: /root
+    creates: /root/.oh-my-zsh
+  environment:
+    ZSH: /root/.oh-my-zsh
+    HOME: /root
+
+- name: Install zsh-autosuggestions plugin
+  git:
+    repo: https://github.com/zsh-users/zsh-autosuggestions
+    dest: /root/.oh-my-zsh/custom/plugins/zsh-autosuggestions
+
+- name: Install zsh-syntax-highlighting plugin
+  git:
+    repo: https://github.com/zsh-users/zsh-syntax-highlighting
+    dest: /root/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting
+
+- name: Pause before reboot
+  pause:
+    seconds: 3
+
+- name: Reboot system after base setup
+  reboot:
+    reboot_timeout: 300
+
+
+#####
+- name: Append common bashrc block
+  ansible.builtin.blockinfile:
+    path: /etc/skel/.bashrc
+    create: true
+    mode: "0644"
+    marker: "# {mark} ANSIBLE COMMON BASHRC"
+    block: "{{ lookup('ansible.builtin.file', 'blocks/bashrc-common.txt') }}"
+
+- name: Append common nanorc block
+  ansible.builtin.blockinfile:
+    path: .nanorc
+    create: true
+    mode: "0644"
+    marker: "\" {mark} ANSIBLE COMMON NANORC"
+    block: "{{ lookup('ansible.builtin.file', 'blocks/nanorc-common.txt') }}"
+
+- name: Append common vimrc block
+  ansible.builtin.blockinfile:
+    path: .vimrc
+    create: true
+    mode: "0644"
+    marker: "\" {mark} ANSIBLE COMMON VIMRC"
+    block: "{{ lookup('ansible.builtin.file', 'blocks/vimrc-common.txt') }}"
+
+- name: Copy .zshrc
+  ansible.builtin.copy:
+    src: files/zshrc-common.txt
+    dest: /etc/skel/.zshrc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure /etc/skel/.ssh exists with secure perms
+  ansible.builtin.file:
+    path: /etc/skel/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Seed /etc/skel/.ssh/config to use host-wide Gitea key
+  ansible.builtin.copy:
+    dest: /etc/skel/.ssh/config
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      Host {{ GITEAHOST }}
+          HostName {{ GITEAHOST }}
+          IdentityFile /etc/ssh/client_keys/ed25519_{{ DOMAIN }}
+          IdentitiesOnly yes
+          User git
+          Port {{ GITSSHPORT }}
+
+- name: Ensure .zshrc.d exists
+  become: false
+  file:
+    path: ~/.zshrc.d
+    state: directory
+    mode: '0755'
+
+- name: Add .local/bin to PATH
+  become: false
+  lineinfile:
+    path: ~/.zshrc.d/vars.zsh
+    create: yes
+    line: 'export PATH=$PATH:/home/{{ ansible_user }}/.local/bin'
+
+- name: Create askpass.sh with Git SSH passphrase
+  ansible.builtin.copy:
+    dest: .ssh/askpass.sh
+    content: |
+      #!/bin/sh
+      echo "{{ GITSSHPHRASE }}"
+    mode: '0755'
+
+- name: Copy askpass.sh to /etc/skel
+  ansible.builtin.copy:
+    src: .ssh/askpass.sh
+    dest: /etc/skel/.ssh/askpass.sh
+    remote_src: true
+    mode: '0755'
+
+- name: Ensure cryptography is available for openssh_keypair (RHEL/Alma)
+  ansible.builtin.dnf:
+    name: python3-cryptography
+    state: present
+
+
+- name: Ensure bcrypt is available for openssh_keypair (RHEL/Alma)
+  ansible.builtin.dnf:
+    name: python3-bcrypt
+    state: present
+
+
+- name: Users, skel, and shared SSH client key
+  block:
+
+    ####################################################################
+    # 0) Build a list of "app users" from APPUSER, APPUSER2, APPUSER3...
+    ####################################################################
+    # - name: Build APPUSERS list from APPUSER* vars (non-empty, de-duped)
+    #   ansible.builtin.set_fact:
+    #     APPUSERS: >-
+    #       {{
+    #         lookup('varnames', '^APPUSER[0-9]*$')
+    #         | map('extract', lookup('vars'))
+    #         | map('default', '')
+    #         | reject('equalto', '')
+    #         | unique
+    #         | list
+    #       }}
+
+    ####################################################################
+    # 2) Generate a host-wide ed25519 key (passphrase-protected)
+    ####################################################################
+    - name: Ensure sshkeyreaders group exists
+      ansible.builtin.group:
+        name: sshkeyreaders
+        state: present
+
+    - name: Ensure shared SSH key directory exists
+      ansible.builtin.file:
+        path: /etc/ssh/client_keys
+        state: directory
+        owner: root
+        group: sshkeyreaders
+        mode: "0750"
+
+    - name: Generate shared SSH keypair for Gitea (host-wide)
+      community.crypto.openssh_keypair:
+        path: "/etc/ssh/client_keys/ed25519_{{ DOMAIN }}"
+        type: ed25519
+        comment: "{{ inventory_hostname }}@{{ DOMAIN }}_{{ ansible_date_time.date }}"
+        passphrase: "{{ GITSSHPHRASE }}"
+        owner: root
+        group: sshkeyreaders
+        mode: "0640"
+
+    - name: Lock down shared public key perms
+      ansible.builtin.file:
+        path: "/etc/ssh/client_keys/ed25519_{{ DOMAIN }}.pub"
+        owner: root
+        group: sshkeyreaders
+        mode: "0644"
+
+- name: Display host-wide public key to add to Gitea
+  become: false
+  ansible.builtin.command: cat /etc/ssh/client_keys/ed25519_{{ DOMAIN }}.pub
+  register: gitea_pubkey
+
+- name: Show public key and prompt for manual addition
+  block:
+    - name: Ask user for confirmation
+      ansible.builtin.pause:
+        prompt: |
+          The following public key must be manually added to your Git host ({{ GITEAHOST }}):
+          {{ gitea_pubkey.stdout }}
+          Once added via the web UI, type 'yes' to continue or 'no' to abort:
+        echo: yes
+      register: user_confirmation
+      until: user_confirmation.user_input is match("^(yes|no)$")
+      retries: 9999
+      delay: 0
+
+    - name: Fail if user said no
+      ansible.builtin.fail:
+        msg: "User chose not to continue."
+      when: user_confirmation.user_input == "no"
+
+- name: Fail if user has not confirmed key addition
+  ansible.builtin.fail:
+    msg: "User did not confirm SSH key was added to Gitea."
+  when: user_confirmation.user_input | lower != 'yes'
+
+
+####################################################################
+# 3) Create users
+####################################################################
+- name: Create ADMINUSER
+  ansible.builtin.user:
+    name: "{{ ADMINUSER }}"
+    create_home: true
+    skeleton: /etc/skel
+    shell: /bin/bash
+
+- name: Ensure ADMINUSER can SSH with same key as root
+  block:
+    - name: Ensure ADMINUSER .ssh exists
+      ansible.builtin.file:
+        path: "/home/{{ ADMINUSER }}/.ssh"
+        state: directory
+        owner: "{{ ADMINUSER }}"
+        group: "{{ ADMINUSER }}"
+        mode: "0700"
+
+    - name: Copy root authorized_keys to ADMINUSER
+      ansible.builtin.copy:
+        remote_src: true
+        src: /root/.ssh/authorized_keys
+        dest: "/home/{{ ADMINUSER }}/.ssh/authorized_keys"
+        owner: "{{ ADMINUSER }}"
+        group: "{{ ADMINUSER }}"
+        mode: "0600"
+
+- name: Create APPUSERS (no authorized_keys)
+  ansible.builtin.user:
+    name: "{{ item }}"
+    create_home: true
+    skeleton: /etc/skel
+    shell: /bin/bash
+    password_lock: true
+  loop: "{{ [APPUSER] + SERVICE_USERS }}"
+
+- name: Remove any authorized_keys for APPUSERS
+  ansible.builtin.file:
+    path: "/home/{{ item }}/.ssh/authorized_keys"
+    state: absent
+  loop: "{{ [APPUSER] + SERVICE_USERS }}"
+
+- name: Ensure .ssh exists for all APPUSERS
+  ansible.builtin.file:
+    path: "/home/{{ item }}/.ssh"
+    state: directory
+    owner: "{{ item }}"
+    group: "{{ item }}"
+    mode: "0700"
+  loop: "{{ [APPUSER] + SERVICE_USERS }}"
+
+
+- name: Add ADMINUSER and APPUSERS to sshkeyreaders group (for outbound git)
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: sshkeyreaders
+    append: true
+  loop: "{{ [ADMINUSER] + [APPUSER] + SERVICE_USERS }}"
+
+##########
+
+- name: Set local console password for root
+  ansible.builtin.user:
+    name: root
+    password: "{{ CONSOLE_ROOT_PASSWORD | password_hash('sha512') }}"
+    update_password: always
+  # when: ansible_virtualization_type != "docker"
+
+- name: Ensure proper ownership of home directories
+  ansible.builtin.file:
+    path: "/home/{{ item }}"
+    state: directory
+    owner: "{{ item }}"
+    group: "{{ item }}"
+    recurse: true
+  loop: "{{ [ADMINUSER] + [APPUSER] + SERVICE_USERS }}"
+
+- name: Set permissions on .ssh directories
+  ansible.builtin.file:
+    path: "/home/{{ item }}/.ssh"
+    mode: '0700'
+    state: directory
+    owner: "{{ item }}"
+    group: "{{ item }}"
+  loop: "{{ [ADMINUSER] + [APPUSER] + SERVICE_USERS }}"
+
+
+- name: Enable UFW
+  ansible.builtin.command: ufw --force enable
+  changed_when: "'already enabled' not in ufw_enable_result.stdout|default('')"
+  register: ufw_enable_result
+
+- name: UFW allow admin ports (idempotent)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: [22, "{{ ADMINPORT | int }}"]
+  notify: Reload UFW
+
+- name: Ensure sshd is enabled and running
+  ansible.builtin.systemd:
+    name: sshd
+    enabled: true
+    state: started
+
+# Ensure UFW drop-in exists and is sane
+- name: Create systemd drop-in dir for ufw
+  ansible.builtin.file:
+    path: /etc/systemd/system/ufw.service.d
+    state: directory
+    mode: "0755"
+
+- name: Reload systemd and (re)enable ufw
+  ansible.builtin.systemd:
+    daemon_reload: true
+    name: ufw
+    enabled: true
+    state: started
+
+- name: Ensure /etc/ssh/authorized_keys exists (for system-wide path)
+  ansible.builtin.file:
+    path: /etc/ssh/authorized_keys
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Adjust sshd_config (safe templating)
+  vars:
+    _allow_users: >-
+      {{ (['root', ADMINUSER|default('')]
+          | reject('equalto','') | list) }}
+
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    create: true
+    marker: "# {mark} ANSIBLE MANAGED BLOCK"
+    block: |
+      PasswordAuthentication no
+      AllowUsers {{ _allow_users | join(' ') }}
+      Port {{ ADMINPORT | int }}
+      Port 22
+      AuthorizedKeysFile %h/.ssh/authorized_keys /etc/ssh/authorized_keys/%u
+      UseDNS no
+  notify: Reload systemd and restart sshd
+
+- name: Validate sshd_config syntax
+  ansible.builtin.command: /usr/sbin/sshd -t -f /etc/ssh/sshd_config
+  changed_when: false
+
+- name: Ensure semanage is available
+  ansible.builtin.dnf:
+    name: policycoreutils-python-utils
+    state: present
+
+- name: Check if ADMINPORT already labeled ssh_port_t
+  ansible.builtin.command: >
+    semanage port -l | grep -E '^ssh_port_t\b.*\b{{ ADMINPORT }}\b'
+  register: ssh_port_label
+  changed_when: false
+  failed_when: false
+
+- name: Add SELinux port mapping for sshd
+  ansible.builtin.command: >
+    semanage port -a -t ssh_port_t -p tcp {{ ADMINPORT }}
+  when: ssh_port_label.rc != 0
+
+- name: Flush handlers so sshd picks up changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Allow sudo without password
+  copy:
+    dest: /etc/sudoers.d/nopw
+    content: |
+      {{ ADMINUSER }} ALL=(ALL) NOPASSWD: ALL
+    mode: '0440'
+
+- name: Restore SELinux contexts on SSH dirs
+  ansible.builtin.command: >
+    restorecon -Rv
+    /root/.ssh
+    /home/{{ ADMINUSER }}/.ssh
+    {% for u in (APPUSERS | default([])) %}/home/{{ u }}/.ssh {% endfor %}
+  changed_when: false
+
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: sshd
+    state: reloaded
+
+- name: Wait for SSH to come back
+  ansible.builtin.wait_for_connection:
+    timeout: 600
+    delay: 5
+
+
+# Edit by ChatGPT
+- name: Canary SSH as {{ ADMINUSER }} after reload
+  become: false
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  ansible.builtin.shell: >
+    ssh -p {{ ADMINPORT | int }}
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o PreferredAuthentications=publickey
+    -o PasswordAuthentication=no
+    -o StrictHostKeyChecking=no
+    {% if SSH_IDENTITY_FILE is defined %}-i {{ SSH_IDENTITY_FILE }}{% endif %}
+    {{ ADMINUSER }}@{{ ansible_host | default(inventory_hostname) }} echo ok
+
+
+- name: Set timezone
+  command: timedatectl set-timezone America/New_York
+
+# Idempotent swapfile setup  — Edit by ChatGPT
+- name: Check if /swapfile exists  # Edit by ChatGPT
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swapfile_stat  # Edit by ChatGPT
+
+- name: Allocate swapfile if missing (4G)  # Edit by ChatGPT
+  ansible.builtin.command:
+    cmd: fallocate -l 4G /swapfile
+    creates: /swapfile
+  when: not swapfile_stat.stat.exists  # Edit by ChatGPT
+
+- name: Set swapfile permissions (0600)  # Edit by ChatGPT
+  ansible.builtin.file:
+    path: /swapfile
+    mode: '0600'
+
+- name: Detect existing swap signature on /swapfile  # Edit by ChatGPT
+  ansible.builtin.command:
+    cmd: blkid -p -s TYPE -o value /swapfile
+  register: swapfile_type  # Edit by ChatGPT
+  changed_when: false  # Edit by ChatGPT
+  failed_when: false   # Edit by ChatGPT
+
+- name: Initialize swap area (mkswap) if signature missing  # Edit by ChatGPT
+  ansible.builtin.command: mkswap /swapfile
+  when: swapfile_type.stdout | default('') != 'swap'  # Edit by ChatGPT
+
+# Write the fstab entry only (do NOT try to mount swap via mount(2))  # Edit by ChatGPT
+- name: Ensure /swapfile entry exists in /etc/fstab  # Edit by ChatGPT
+  ansible.posix.mount:
+    name: none           # fstab target column 2  # Edit by ChatGPT
+    src: /swapfile       # fstab column 1        # Edit by ChatGPT
+    fstype: swap         # fstab column 3        # Edit by ChatGPT
+    opts: sw             # fstab column 4        # Edit by ChatGPT
+    state: present       # manage fstab only     # Edit by ChatGPT
+
+# Activate swap if not already on  # Edit by ChatGPT
+- name: Check active swap devices  # Edit by ChatGPT
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: swapon_list  # Edit by ChatGPT
+  changed_when: false  # Edit by ChatGPT
+  failed_when: false   # Edit by ChatGPT
+
+- name: Activate /swapfile  # Edit by ChatGPT
+  ansible.builtin.command: swapon /swapfile
+  when: "'/swapfile' not in (swapon_list.stdout_lines | default([]))"  # Edit by ChatGPT
+
+
+- name: Set swappiness
+  sysctl:
+    name: vm.swappiness
+    value: 50
+    state: present
+
+- name: Set vfs_cache_pressure
+  sysctl:
+    name: vm.vfs_cache_pressure
+    value: 50
+    state: present
+
+# Fail2ban
+- name: Install fail2ban
+  ansible.builtin.dnf:
+    name: fail2ban
+    state: present
+
+- name: Start and enable fail2ban
+  systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+
+- name: Configure fail2ban jail.local
+  copy:
+    dest: /etc/fail2ban/jail.local
+    mode: '0644'
+    content: |
+      [DEFAULT]
+      ignoreip = 127.0.0.1/8 ::1 {{ LOCALIP | default('') }}
+      bantime  = 86400
+      findtime = 86400
+      destemail = {{ EMAIL }}
+      sender = fail2ban@mail.{{ DOMAIN }}
+      sendername = Fail2ban
+      mta = sendmail
+      action = %(action_mwl)s
+
+      [sshd]
+      enabled = true
+      port = 22,{{ ADMINPORT }}
+      filter = sshd
+      logpath = /var/log/secure
+      maxretry = 5
+  notify: Restart fail2ban
+
+- name: Whitelist my workstation in fail2ban (jail.d)
+  copy:
+    dest: /etc/fail2ban/jail.d/whitelist.local
+    content: |
+      [DEFAULT]
+      ignoreip = 127.0.0.1/8 ::1 {{ LOCALIP }}
+  notify: Restart fail2ban
+
+# --- Boot resilience for sshd + UFW (idempotent) ---
+
+# UFW: make sure it is enabled *and* starts early enough in the boot
+- name: Ensure UFW is enabled now and on boot
+  ansible.builtin.systemd:
+    name: ufw
+    enabled: true
+    state: started
+
+- name: "Order UFW before network-pre (avoid online-cycle)"
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ufw.service.d/override.conf
+    mode: "0644"
+    content: |
+      [Unit]
+      Wants=network-pre.target
+      Before=network-pre.target
+
+- name: "Reload systemd and start UFW (oneshot)"
+  ansible.builtin.systemd:
+    daemon_reload: true
+    name: ufw
+    enabled: true
+    state: started
+
+# SELinux: ensure sshd port is labeled (requires community.general)
+- name: Install policycoreutils-python-utils (for semanage)
+  ansible.builtin.dnf:
+    name: policycoreutils-python-utils
+    state: present
+
+- name: Ensure sshd SELinux port is present
+  community.general.seport:
+    ports: "{{ ADMINPORT | int }}"
+    proto: tcp
+    setype: ssh_port_t
+    state: present
+
+# Avoid socket/service ambiguity for SSH
+- name: Stop and disable sshd.socket if present
+  ansible.builtin.systemd:
+    name: sshd.socket
+    state: stopped
+    enabled: false
+  failed_when: false
+
+# Harden sshd unit ordering and restart behaviour
+- name: Ensure sshd systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/sshd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Order sshd after network-online and auto-restart
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sshd.service.d/override.conf
+    mode: "0644"
+    content: |
+      [Unit]
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Restart=always
+      RestartSec=5s
+
+# On Alma/NetworkManager, ensure "network-online" actually waits
+- name: Enable NetworkManager-wait-online
+  ansible.builtin.systemd:
+    name: NetworkManager-wait-online.service
+    enabled: true
+    state: started
+
+# Sanity checks: host keys, config syntax, (re)enable + restart
+- name: Ensure SSH host keys exist
+  ansible.builtin.command: ssh-keygen -A
+  changed_when: false
+  failed_when: false
+
+- name: Validate sshd_config syntax
+  ansible.builtin.command: /usr/sbin/sshd -t -f /etc/ssh/sshd_config
+  changed_when: false
+
+- name: Reload systemd and (re)enable sshd
+  ansible.builtin.systemd:
+    daemon_reload: true
+    name: sshd
+    enabled: true
+    state: restarted
+
+# Prove sshd is actually listening on our admin port (server-side)
+- name: Confirm sshd is listening on ADMINPORT
+  ansible.builtin.shell: "ss -ltn | awk '$1==\"LISTEN\" && $4 ~ /:{{ ADMINPORT | int }}$/ {found=1} END{exit !found}'"
+  changed_when: false
+
+# Optional: from controller, verify we can reach the port (no become)
+- name: "Controller preflight: can reach SSH admin port"
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host | default(inventory_hostname) }}"
+    port: "{{ ADMINPORT | int }}"
+    state: started
+    delay: 0
+    timeout: 30
+  delegate_to: localhost
+  become: false
+
+
+#### Console fixes to prevent debugging annoyances:
+
+- name: Ensure getty drop-in dir exists
+  file:
+    path: /etc/systemd/system/getty@tty1.service.d
+    state: directory
+    mode: "0755"
+
+- name: Disable TTY case conversion on tty1 at login
+  copy:
+    dest: /etc/systemd/system/getty@tty1.service.d/10-stty.conf
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStartPost=/bin/sh -c 'stty -F /dev/tty1 sane -iuclc -olcuc || true'
+  notify: daemon-reload
+
+- name: Make shells default to sane TTY flags
+  copy:
+    dest: /etc/profile.d/99-stty-sane.sh
+    mode: "0644"
+    content: |
+      # keep console from lowercasing input/output
+      stty sane -iuclc -olcuc 2>/dev/null || true
+
+- name: Keep kernel from spamming console
+  copy:
+    dest: /etc/sysctl.d/99-console-quiet.conf
+    mode: "0644"
+    content: "kernel.printk = 1 4 1 7\n"
+  notify: apply-sysctl
+
+- name: Ensure journald drop-in dir exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: "Install journald override"
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/override.conf
+    mode: "0644"
+    content: |
+      [Journal]
+      Storage=persistent
+      ForwardToConsole=no
+  notify:
+    - "daemon-reload"
+    - "restart-journald"
+
+- name: Tame UFW logging
+  command: ufw logging low
+  changed_when: false
+  failed_when: false
+
+- name: "Drop sysctl tunables"
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-custom.conf
+    mode: "0644"
+    content: |
+      net.ipv4.ip_forward = 1
+  notify: "apply-sysctl"
+
+############
+- name: Wait for new login method (admin user + port)
+  wait_for_connection:
+    timeout: 60
+  vars:
+    ansible_user: "{{ ADMINUSER }}"
+    ansible_port: "{{ ADMINPORT }}"
+
+####
+- name: Set global Git email
+  become: false
+  git_config:
+    name: user.email
+    scope: global
+    value: "{{ EMAIL }}"
+
+- name: Set global Git username
+  become: false
+  git_config:
+    name: user.name
+    scope: global
+    value: "{{ REALNAME }}"
+
+- name: Set default shell to zsh for user
+  user:
+    name: "{{ ansible_user }}"
+    shell: /usr/bin/zsh
+
+- name: Ensure python3-cryptography is installed
+  become: true
+  dnf:
+    name: python3-cryptography
+    state: present
+
+- name: Ensure python3-bcrypt is installed
+  become: true
+  dnf:
+    name: python3-bcrypt
+    state: present
+
+# - name: Add key to SSH agent using askpass
+#   become: false
+#   shell: |
+#     eval $(ssh-agent)
+#     export GITSSHPHRASE="{{ GITSSHPHRASE }}"
+#     SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$HOME/.ssh/askpass.sh" ssh-add /etc/ssh/client_keys/ed25519_{{ DOMAIN }}
+#   environment:
+#     DISPLAY: ":0"
+#   args:
+#     executable: /bin/bash
+
+
+- name: Set zsh theme to crcandy
+  become: false
+  lineinfile:
+    path: ~/.zshrc
+    regexp: '^ZSH_THEME='
+    line: 'ZSH_THEME="crcandy"'
+
+- name: Replace green with yellow in theme
+  become: false
+  replace:
+    path: ~/.oh-my-zsh/themes/crcandy.zsh-theme
+    regexp: 'green'
+    replace: 'yellow'
+
+- name: Set SELinux to enforcing
+  replace:
+    path: /etc/selinux/config
+    regexp: '^SELINUX=permissive'
+    replace: 'SELINUX=enforcing'
+
+- name: Reboot with generous timeouts
+  reboot:
+    connect_timeout: 30
+    reboot_timeout: 900
+    pre_reboot_delay: 0
+    post_reboot_delay: 10
+    test_command: whoami
+
+
+
+####################################################
+########### Install packages #########################
+####################################################
+- name: Ensure /var/log/sssd directory exists
+  file:
+    path: /var/log/sssd
+    state: directory
+    mode: '0755'
+
+- name: Update all packages
+  dnf:
+    name: '*'
+    state: latest
+    update_cache: yes
+
+- name: Import Remi RPM GPG key
+  rpm_key:
+    state: present
+    key: http://rpms.remirepo.net/RPM-GPG-KEY-remi2024
+
+- name: Ensure trust store is up to date
+  become: true
+  block:
+    - name: Install ca-certificates if missing
+      dnf:
+        name: ca-certificates
+        state: present
+
+    - name: Update system CA trust store
+      command: update-ca-trust extract
+      changed_when: false
+
+    - name: Ensure trust store is refreshed via dnf update
+      dnf:
+        name: ca-certificates
+        state: latest
+
+- name: Download remi-release RPM without TLS verification
+  shell: |
+    curl -L -o /tmp/remi-release-10.rpm https://rpms.remirepo.net/enterprise/remi-release-10.rpm
+  args:
+    executable: /bin/bash
+
+- name: Install Remi release RPM
+  dnf:
+    name: /tmp/remi-release-10.rpm
+    state: present
+
+- name: Install required packages
+  dnf:
+    name:
+      - python3-pip
+      - python3-devel
+      - gcc
+      - jq
+      - wget
+      - perl
+      - bzip2
+      - php
+      - php-zip
+    state: present
+
+- name: Flush disk buffers
+  shell: sync
+  args:
+    executable: /bin/bash
+
+- name: Sleep briefly after sync
+  pause:
+    seconds: 5
+
+- name: Reboot with generous timeouts
+  reboot:
+    connect_timeout: 30
+    reboot_timeout: 300
+    pre_reboot_delay: 0
+    post_reboot_delay: 10
+    test_command: whoami
+
+############################################3
+######### Configure AWS-cli and Backblaze B2 ##########
+############################################
+
+- name: Shadow fingerprint (start)  # Edit by ChatGPT
+  shell: "stat -c '%y %s' /etc/shadow ; sha256sum /etc/shadow ; awk -F: '$1==\"root\"{print $2}' /etc/shadow"
+  register: shadow_fp
+  changed_when: false  # Edit by ChatGPT
+
+- debug:
+    msg:
+      - "shadow mtime/size/hash/rootfield @start -> {{ shadow_fp.stdout_lines }}"  # Edit by ChatGPT
+
+- name: Variable check
+  debug:
+    msg: "Starting AWS setup, inventory_hostname is: {{ inventory_hostname }}"
+
+- name: Ensure zshrc.d directory exists
+  file:
+    path: /home/{{ ADMINUSER }}/.zshrc.d
+    state: directory
+    owner: "{{ ADMINUSER }}"
+    group: "{{ ADMINUSER }}"
+    mode: '0755'
+
+- name: Set B2ENDPOINT in zshrc.d vars
+  lineinfile:
+    path: /home/{{ ADMINUSER }}/.zshrc.d/vars.zsh
+    line: 'export B2ENDPOINT={{ B2ENDPOINT }}'
+    create: yes
+    owner: "{{ ADMINUSER }}"
+    group: "{{ ADMINUSER }}"
+    mode: '0644'
+
+- name: Disable terminal clearing on zsh logout
+  ansible.builtin.lineinfile:
+    path: /etc/zlogout
+    regexp: '^\s*clear\s*$'
+    line: '# clear  # disabled to preserve terminal scrollback'
+    state: present
+    backup: true
+
+- name: Install AWS CLI using pip
+  pip:
+    name: awscli
+    state: latest
+    executable: pip3
+  become_user: "{{ ADMINUSER }}"
+
+- name: Configure AWS CLI profile 'B2'
+  shell: |
+    aws configure set aws_access_key_id "{{ B2ID }}" --profile backblaze
+    aws configure set aws_secret_access_key "{{ B2KEY }}" --profile backblaze
+    aws configure set output text --profile backblaze
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    HOME: "/home/{{ ADMINUSER }}"
+    PATH: "/home/{{ ADMINUSER }}/.local/bin:{{ ansible_env.PATH }}"
+  args:
+    executable: /bin/bash
+
+- name: Install boto3 and botocore on web host
+  pip:
+    name:
+      - boto3
+      - botocore
+    state: present
+    executable: pip3
+
+- name: Ensure Backblaze B2 backup bucket exists and create if not
+  amazon.aws.s3_bucket:
+    name: "{{ BACKUPBUCKET }}"
+    state: present
+    endpoint_url: "https://{{ B2ENDPOINT }}"
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    AWS_PROFILE: backblaze
+    HOME: "/home/{{ ADMINUSER }}"
+
+- name: Create pgdumps folder in B2 bucket
+  shell: |
+    aws s3api put-object --bucket {{ BACKUPBUCKET }} --key pgdumps_{{ DOMAIN }}/ --content-length 0 --profile backblaze --endpoint-url=https://{{ B2ENDPOINT }}
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    HOME: "/home/{{ ADMINUSER }}"
+    PATH: "/home/{{ ADMINUSER }}/.local/bin:{{ ansible_env.PATH }}"
+  args:
+    executable: /bin/bash
+
+- name: Generate backup key pair
+  command: openssl req -x509 -nodes -days 1000000 -newkey rsa:4096 \
+           -keyout backup_key.pem \
+           -subj "/C={{ COUNTRY }}/O={{ DOMAIN }}/CN={{ inventory_hostname }}/emailAddress={{ EMAIL }}" \
+           -out backup_key.pem.pub
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    HOME: "/home/{{ ADMINUSER }}"
+    PATH: "/home/{{ ADMINUSER }}/.local/bin:{{ ansible_env.PATH }}"
+  args:
+    creates: backup_key.pem
+    chdir: "/home/{{ ADMINUSER }}"
+
+- name: Tune PHP memory limit
+  lineinfile:
+    path: /etc/php.ini
+    regexp: '^(memory_limit\s*=)'
+    line: 'memory_limit = 1024M'
+    backup: yes
+
+- name: Create site-resources directory
+  file:
+    path: /home/{{ ADMINUSER }}/site-resources
+    state: directory
+    owner: "{{ ADMINUSER }}"
+    group: "{{ ADMINUSER }}"
+    mode: '0755'
+
+- name: Download papyrus image
+  shell: |
+    aws s3api get-object --bucket {{ RESOURCE_BUCKET }} --key papyrus_transparent_glow_smaller.png --profile backblaze --endpoint-url=https://{{ B2ENDPOINT }} site-resources/papyrus_transparent.jpg
+  args:
+    chdir: "/home/{{ ADMINUSER }}"
+    executable: /bin/bash
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    HOME: "/home/{{ ADMINUSER }}"
+    PATH: "/home/{{ ADMINUSER }}/.local/bin:{{ ansible_env.PATH }}"
+
+- name: Download MedusaGothic font
+  shell: |
+    aws s3api get-object --bucket {{ RESOURCE_BUCKET }} --key MedusaGothic.woff2 --profile backblaze --endpoint-url=https://{{ B2ENDPOINT }} site-resources/MedusaGothic.woff2
+  args:
+    chdir: "/home/{{ ADMINUSER }}"
+    executable: /bin/bash
+  become: true
+  become_user: "{{ ADMINUSER }}"
+  environment:
+    HOME: "/home/{{ ADMINUSER }}"
+    PATH: "/home/{{ ADMINUSER }}/.local/bin:{{ ansible_env.PATH }}"
+
