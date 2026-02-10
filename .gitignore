@@ -6,6 +6,24 @@ __pycache__/
 # C extensions
 *.so
 
+env
+env/*
+old/*
+Old/*
+private/*
+Private/*
+secret/*
+Secret/*
+secrets/*
+Secrets/*
+Data/*
+data/*
+Databases/*
+databases/*
+Downloads/*
+downloads/*
+*.log
+
 # Distribution / packaging
 .Python
 build/
